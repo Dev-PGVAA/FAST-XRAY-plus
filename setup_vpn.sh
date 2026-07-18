@@ -4,13 +4,12 @@
 #  Xray-core (VLESS+REALITY, Shadowsocks) + Telegram MTProto + опционально:
 #  Cloudflare WARP (анти-гео-детект), мониторинг ресурсов, харденинг, BBR
 #
-#  ИСПРАВЛЕННАЯ ВЕРСИЯ:
-#   - парсинг ключей x25519 под новый формат Xray (PrivateKey/Password)
-#   - WARP: флаг --accept-tos, роутинг Google в WARP только если он реально поднялся
-#   - ufw открывает реальный SSH-порт из sshd_config, а не хардкод 22
-#   - убраны markdown-артефакты в списках доменов
+#  Объединяет исходный setup_vpn.sh + все доработки (WARP-роутинг Google,
+#  мониторинг, fail2ban, unattended-upgrades, BBR) в один универсальный
+#  скрипт с интерактивным чек-бокс меню выбора компонентов.
 # ============================================================================
 set -euo pipefail
+
 LOCATION_TAG="VPS"
 LOG_FILE="/var/log/vpn-setup.log"
 SCRIPT_DIR="/usr/local/etc/xray"
@@ -23,8 +22,10 @@ PORT_SS=2040
 PORT_MTG=2096
 WARP_SOCKS_PORT=40000
 MTG_FAKE_TLS_HOST="www.cloudflare.com"
+
 mkdir -p "$(dirname "$LOG_FILE")"
 exec > >(tee -a "$LOG_FILE") 2>&1
+
 # ---------------------------------------------------------------------------
 # Оформление
 # ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ BANNER
   echo -e "${C_CYAN}${C_BOLD}${LINE_BOLD}${C_RESET}"
   echo
 }
+
 # ---------------------------------------------------------------------------
 # Чек-бокс меню (↑/↓ — навигация, Пробел — вкл/выкл, Enter — подтвердить)
 # ---------------------------------------------------------------------------
@@ -100,6 +102,7 @@ CB_LABELS=(
   "BBR — тюнинг TCP для более стабильного и быстрого туннеля"
 )
 CB_SELECTED=(1 1 1 1 1 1)
+
 checkbox_menu() {
   local cur=0
   local n=${#CB_LABELS[@]}
@@ -139,6 +142,7 @@ checkbox_menu() {
   done
   clear
 }
+
 # ---------------------------------------------------------------------------
 # Опрос — всё спрашиваем до начала установки
 # ---------------------------------------------------------------------------
@@ -148,7 +152,7 @@ ANSWER_USER_PASSWORD=""
 ANSWER_LOGIN_METHOD=""
 ANSWER_DISABLE_ROOT_LOGIN="y"
 WANT_MTPROTO="n"; WANT_WARP="n"; WANT_MONITORING="n"; WANT_FAIL2BAN="n"; WANT_UNATTENDED="n"; WANT_BBR="n"
-WARP_CONNECTED="n"
+
 collect_answers() {
   echo -e "${C_WHITE}${C_BOLD}Перед установкой — несколько вопросов.${C_RESET}"
   echo
@@ -195,23 +199,20 @@ collect_answers() {
   else
     ANSWER_DISABLE_ROOT_LOGIN="n"
   fi
-  # Защита от локаута: не отключаем root, если новый юзер зайти не сможет
-  if [[ "$ANSWER_DISABLE_ROOT_LOGIN" == "y" && "$ANSWER_CREATE_USER" != "y" ]]; then
-    warn "Ты не создаёшь отдельного пользователя, но просишь отключить root login —"
-    warn "это оставит сервер без доступа по SSH. Оставляю root login включённым."
-    ANSWER_DISABLE_ROOT_LOGIN="n"
-  fi
   echo
   ok "Основные настройки получены."
   echo
   read -r -p "$(echo -e "  ${C_MAGENTA}?${C_RESET} Нажми Enter, чтобы перейти к выбору дополнительных компонентов...")" _ </dev/tty
+
   checkbox_menu
+
   [[ "${CB_SELECTED[0]}" == "1" ]] && WANT_MTPROTO="y"
   [[ "${CB_SELECTED[1]}" == "1" ]] && WANT_WARP="y"
   [[ "${CB_SELECTED[2]}" == "1" ]] && WANT_MONITORING="y"
   [[ "${CB_SELECTED[3]}" == "1" ]] && WANT_FAIL2BAN="y"
   [[ "${CB_SELECTED[4]}" == "1" ]] && WANT_UNATTENDED="y"
   [[ "${CB_SELECTED[5]}" == "1" ]] && WANT_BBR="y"
+
   echo -e "${C_WHITE}${C_BOLD}Выбрано:${C_RESET}"
   for i in "${!CB_LABELS[@]}"; do
     if [[ "${CB_SELECTED[$i]}" == "1" ]]; then
@@ -223,6 +224,7 @@ collect_answers() {
   echo
   ok "Начинаю установку."
 }
+
 # ---------------------------------------------------------------------------
 # Системные шаги
 # ---------------------------------------------------------------------------
@@ -232,13 +234,6 @@ get_server_ip() {
   [[ -z "${ip:-}" ]] && ip="$(hostname -I | awk '{print $1}' || true)"
   [[ -z "${ip:-}" ]] && ip="$SERVER_IP_DEFAULT"
   echo "$ip"
-}
-# Реальные SSH-порты из sshd_config (для корректного правила ufw)
-get_ssh_ports() {
-  local ports
-  ports="$(grep -iE '^[[:space:]]*Port[[:space:]]+[0-9]+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}')"
-  [[ -z "$ports" ]] && ports="22"
-  echo "$ports"
 }
 make_dirs() {
   mkdir -p "$SCRIPT_DIR" "$CLIENT_DIR" "$MTG_DIR"
@@ -307,15 +302,8 @@ generate_xray_data() {
   done
   local key_output
   key_output="$(xray x25519)"
-  # Поддержка старого ("Private key:"/"Public key:") и нового
-  # ("PrivateKey:"/"Password:") формата вывода xray x25519.
-  xray_privateKey_vrv="$(awk -F': ' '/[Pp]rivate ?[Kk]ey/{print $2; exit}' <<< "$key_output")"
-  xray_publicKey_vrv="$(awk -F': ' '/Password|[Pp]ublic ?[Kk]ey/{print $2; exit}' <<< "$key_output")"
-  if [[ -z "${xray_privateKey_vrv:-}" || -z "${xray_publicKey_vrv:-}" ]]; then
-    fail "Не удалось распарсить ключи x25519. Формат вывода мог измениться. Сырой вывод:"
-    echo "$key_output"
-    exit 1
-  fi
+  xray_privateKey_vrv="$(awk -F': ' '/PrivateKey/ {print $2}' <<< "$key_output")"
+  xray_publicKey_vrv="$(awk -F': ' '/PublicKey/ {print $2}' <<< "$key_output")"
   xray_shortIds_vrv="$(openssl rand -hex 8)"
   xray_sspasw_vrv="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)"
   ipserv="$(get_server_ip)"
@@ -416,10 +404,6 @@ patch_xray_with_warp() {
   if [[ "$WANT_WARP" != "y" ]]; then
     return
   fi
-  if [[ "$WARP_CONNECTED" != "y" ]]; then
-    warn "WARP не подключён — роутинг Google через WARP не добавляю (трафик пойдёт напрямую)."
-    return
-  fi
   if ! jq -e '.outbounds[] | select(.tag=="warp")' "$SCRIPT_DIR/config.json" > /dev/null; then
     jq --arg port "$WARP_SOCKS_PORT" '.outbounds += [{
       "tag": "warp",
@@ -433,7 +417,16 @@ patch_xray_with_warp() {
       "outboundTag": "warp"
     }] + .routing.rules' "$SCRIPT_DIR/config.json" > /tmp/xray_tmp.json && mv /tmp/xray_tmp.json "$SCRIPT_DIR/config.json"
   fi
-  ok "Google-трафик добавлен в роутинг через WARP"
+  # YouTube — самый тяжёлый Google-трафик, WARP не тянет его на приемлемой скорости.
+  # Правило-исключение должно идти ПЕРЕД geosite:google, иначе не сработает
+  # (Xray матчит правила по порядку, первое совпадение побеждает).
+  if ! jq -e '.routing.rules[] | select(.domain[0]? == "domain:youtube.com")' "$SCRIPT_DIR/config.json" > /dev/null; then
+    jq '.routing.rules = [{
+      "domain": ["domain:youtube.com", "domain:googlevideo.com", "domain:ytimg.com", "domain:youtu.be", "domain:ggpht.com", "domain:yt3.ggpht.com"],
+      "outboundTag": "direct"
+    }] + .routing.rules' "$SCRIPT_DIR/config.json" > /tmp/xray_tmp.json && mv /tmp/xray_tmp.json "$SCRIPT_DIR/config.json"
+  fi
+  ok "Google-трафик роутится через WARP, YouTube — напрямую (иначе тормозит)"
 }
 start_xray() {
   systemctl enable xray --now > /dev/null 2>&1
@@ -463,12 +456,7 @@ setup_ufw() {
   fi
   ufw default deny incoming > /dev/null
   ufw default allow outgoing > /dev/null
-  # Открываем реальные SSH-порты из sshd_config (не хардкод 22), чтобы не залочиться
-  local sp
-  for sp in $(get_ssh_ports); do
-    ufw allow "${sp}/tcp" comment 'ssh' > /dev/null
-    info "SSH-порт ${sp} открыт в firewall"
-  done
+  ufw allow 22/tcp comment 'ssh' > /dev/null
   ufw allow "${PORT_VLESS_MAIN}/tcp" comment 'xray vless reality' > /dev/null
   ufw allow "${PORT_VLESS_BACKUP}/tcp" comment 'xray vless reality backup' > /dev/null
   ufw allow "${PORT_SS}/tcp" comment 'xray shadowsocks' > /dev/null
@@ -566,32 +554,28 @@ install_warp() {
   fi
   systemctl enable warp-svc --now > /dev/null 2>&1
   sleep 2
-  # --accept-tos обязателен для современных версий warp-cli, иначе команды молча ничего не делают
-  if ! warp-cli --accept-tos registration show &>/dev/null; then
-    warp-cli --accept-tos registration new > /dev/null 2>&1 || true
+  if ! warp-cli registration show &>/dev/null; then
+    warp-cli registration new > /dev/null || true
   fi
-  warp-cli --accept-tos mode proxy > /dev/null 2>&1 || true
-  warp-cli --accept-tos proxy port "$WARP_SOCKS_PORT" > /dev/null 2>&1 || true
-  warp-cli --accept-tos connect > /dev/null 2>&1 || true
-  sleep 3
-  if warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
-    WARP_CONNECTED="y"
+  warp-cli mode proxy > /dev/null || true
+  warp-cli proxy port "$WARP_SOCKS_PORT" > /dev/null || true
+  warp-cli connect > /dev/null || true
+  sleep 2
+  if warp-cli status | grep -q "Connected"; then
     ok "Cloudflare WARP установлен и подключен (SOCKS5 127.0.0.1:${WARP_SOCKS_PORT})"
   else
-    WARP_CONNECTED="n"
-    warn "WARP установлен, но не подключился — Google-трафик оставлю напрямую."
-    warn "Проверь вручную: warp-cli status  (и warp-cli --help на предмет синтаксиса твоей версии)"
+    warn "WARP установлен, но не подключился с первого раза — проверь: warp-cli status"
   fi
 }
 warp_watchdog() {
-  if [[ "$WANT_WARP" != "y" || "$WARP_CONNECTED" != "y" ]]; then
+  if [[ "$WANT_WARP" != "y" ]]; then
     return
   fi
   cat > /usr/local/bin/warp-watchdog.sh << 'EOF'
 #!/bin/bash
-if ! warp-cli --accept-tos status 2>/dev/null | grep -q "Connected"; then
+if ! warp-cli status | grep -q "Connected"; then
   logger "warp-watchdog: WARP не подключен, переподключаю"
-  warp-cli --accept-tos connect
+  warp-cli connect
 fi
 EOF
   chmod +x /usr/local/bin/warp-watchdog.sh
@@ -647,6 +631,7 @@ setup_bbr() {
     return
   fi
   cat >> /etc/sysctl.conf << 'EOF'
+
 # --- setup_vpn_full.sh: BBR for better VPN throughput ---
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -708,7 +693,7 @@ write_server_readme() {
     fi
     echo
     echo "Компоненты:"
-    echo "  WARP (роутинг Google): $( [[ "$WANT_WARP" == "y" ]] && ( [[ "$WARP_CONNECTED" == "y" ]] && echo 'да' || echo 'установлен, но не подключился' ) || echo нет )"
+    echo "  WARP (роутинг Google): $( [[ "$WANT_WARP" == "y" ]] && echo да || echo нет )"
     echo "  Мониторинг:            $( [[ "$WANT_MONITORING" == "y" ]] && echo да || echo нет )"
     echo "  fail2ban:               $( [[ "$WANT_FAIL2BAN" == "y" ]] && echo да || echo нет )"
     echo "  unattended-upgrades:    $( [[ "$WANT_UNATTENDED" == "y" ]] && echo да || echo нет )"
@@ -720,6 +705,7 @@ write_server_readme() {
   } > "$CLIENT_DIR/README.txt"
   ok "README сохранён в ${CLIENT_DIR}/README.txt"
 }
+
 # ---------------------------------------------------------------------------
 # Финальный экран
 # ---------------------------------------------------------------------------
@@ -755,7 +741,7 @@ final_output() {
   echo
   echo -e "${C_DIM}${LINE_THIN}${C_RESET}"
   echo -e "${C_WHITE}${C_BOLD}🧩 Дополнительные компоненты${C_RESET}"
-  echo -e "  WARP (роутинг Google через Cloudflare): $( [[ "$WANT_WARP" == "y" ]] && ( [[ "$WARP_CONNECTED" == "y" ]] && echo -e "${C_GREEN}включен${C_RESET}" || echo -e "${C_YELLOW}установлен, но не подключился${C_RESET}" ) || echo -e "${C_DIM}не устанавливался${C_RESET}" )"
+  echo -e "  WARP (роутинг Google через Cloudflare): $( [[ "$WANT_WARP" == "y" ]] && echo -e "${C_GREEN}включен${C_RESET}" || echo -e "${C_DIM}не устанавливался${C_RESET}" )"
   echo -e "  Мониторинг (btop/htop/iotop/ncdu/vnstat): $( [[ "$WANT_MONITORING" == "y" ]] && echo -e "${C_GREEN}установлен${C_RESET}" || echo -e "${C_DIM}не устанавливался${C_RESET}" )"
   echo -e "  fail2ban:                                 $( [[ "$WANT_FAIL2BAN" == "y" ]] && echo -e "${C_GREEN}включен${C_RESET}" || echo -e "${C_DIM}не устанавливался${C_RESET}" )"
   echo -e "  unattended-upgrades:                      $( [[ "$WANT_UNATTENDED" == "y" ]] && echo -e "${C_GREEN}включен${C_RESET}" || echo -e "${C_DIM}не устанавливался${C_RESET}" )"
@@ -822,6 +808,7 @@ final_output() {
   echo -e "   повторно их показать скрипт не сможет.${C_RESET}"
   echo -e "${C_GREEN}${C_BOLD}${LINE_BOLD}${C_RESET}"
 }
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
