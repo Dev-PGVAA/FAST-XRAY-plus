@@ -1,4 +1,4 @@
-# XrayForge
+# FAST-XRAY-plus
 
 Универсальный установщик VPN-сервера для чистого Ubuntu/Debian VPS: Xray-core (VLESS+REALITY, Shadowsocks), Telegram MTProto-прокси, Cloudflare WARP, мониторинг ресурсов и базовый харденинг — всё в одном интерактивном скрипте с чек-бокс меню выбора компонентов.
 
@@ -26,7 +26,7 @@
 ## Установка
 
 ```bash
-curl -O https://raw.githubusercontent.com/DEV-PGVAA/XrayForge/main/setup_vpn.sh
+curl -O https://raw.githubusercontent.com/DEV-PGVAA/FAST-XRAY-plus/main/setup_vpn.sh
 bash setup_vpn.sh
 ```
 
