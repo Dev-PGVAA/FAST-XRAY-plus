@@ -2,8 +2,6 @@
 
 Универсальный установщик VPN-сервера для чистого Ubuntu/Debian VPS: Xray-core (VLESS+REALITY, Shadowsocks), Telegram MTProto-прокси, Cloudflare WARP, мониторинг ресурсов и базовый харденинг — всё в одном интерактивном скрипте с чек-бокс меню выбора компонентов.
 
-Форк [FastXray_MTProto](https://github.com/Dev-PGVAA/FastXray_MTProto), расширенный до полноценного конструктора сервера.
-
 ## Что делает скрипт
 
 - Ставит **Xray-core** с VLESS+REALITY (основной + резервный порт) и Shadowsocks
