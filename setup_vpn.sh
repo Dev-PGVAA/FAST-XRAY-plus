@@ -395,14 +395,17 @@ create_user() {
 # --- Устойчивый парсинг ключей REALITY (поддержка нового и старого формата) ---
 parse_x25519() {
   local out="$1"
-  # Приватный ключ: "PrivateKey:" (новый) или "Private key:" (старый)
+  # Приватный ключ — старый и новый формат
   xray_privateKey_vrv="$(sed -nE 's/.*[Pp]rivate[ _]?[Kk]ey:[[:space:]]*([A-Za-z0-9_-]+).*/\1/p' <<< "$out" | head -n1)"
-  # Публичный ключ: в новых версиях это "Password:", в старых "Public key:"/"PublicKey:"
-  xray_publicKey_vrv="$(sed -nE 's/.*[Pp]assword:[[:space:]]*([A-Za-z0-9_-]+).*/\1/p'          <<< "$out" | head -n1)"
-  [[ -z "$xray_publicKey_vrv" ]] && \
-  xray_publicKey_vrv="$(sed -nE 's/.*[Pp]ublic[ _]?[Kk]ey:[[:space:]]*([A-Za-z0-9_-]+).*/\1/p' <<< "$out" | head -n1)"
+  
+  # Публичный ключ — поддерживаем:
+  #   - "Public key:..."
+  #   - "PublicKey:..."
+  #   - "Password (PublicKey):..."
+  xray_publicKey_vrv="$(
+    sed -nE 's/.*(Public[ _]?Key:|Password[[:space:]]*\(PublicKey\):)[[:space:]]*([A-Za-z0-9_-]+).*/\2/p' <<< "$out" | head -n1
+  )"
 }
-
 generate_xray_data() {
   xray_uuid_vrv="$(xray uuid)"
 
