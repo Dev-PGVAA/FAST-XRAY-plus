@@ -428,7 +428,7 @@ write_client_links() {
   local server_ip="$1"
   local tag_encoded
   tag_encoded="$(printf '%s' "$LOCATION_TAG" | jq -sRr @uri)"
-  ss_link_b64="$(printf 'chacha20-ietf-poly1305:%s' "$xray_sspasw_vrv" | base64 -w 0)
+  ss_link_b64="$(printf 'chacha20-ietf-poly1305:%s' "$xray_sspasw_vrv" | base64 -w 0)"
   vless_main_link="vless://${xray_uuid_vrv}@${server_ip}:${PORT_VLESS_MAIN}?security=reality&sni=${xray_dest_vrv}&fp=chrome&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&type=tcp&flow=xtls-rprx-vision&encryption=none&spx=%2F#${tag_encoded}%20VLESS%20${PORT_VLESS_MAIN}"
   vless_backup_link="vless://${xray_uuid_vrv}@${server_ip}:${PORT_VLESS_BACKUP}?security=reality&sni=${xray_dest_vrv222}&fp=chrome&pbk=${xray_publicKey_vrv}&sid=${xray_shortIds_vrv}&type=tcp&flow=xtls-rprx-vision&encryption=none&spx=%2F#${tag_encoded}%20VLESS%20${PORT_VLESS_BACKUP}%20backup"
   ss_link="ss://${ss_link_b64}@${server_ip}:${PORT_SS}#${tag_encoded}%20Shadowsocks"
